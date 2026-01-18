@@ -19,6 +19,8 @@ export default function StudyApp() {
     const [selectedUnit, setSelectedUnit] = useState<string | null>(null);
     const [isLoaded, setIsLoaded] = useState(false);
     const [readOnly, setReadOnly] = useState(false);
+    const [updatedAt, setUpdatedAt] = useState<number>(0);
+    const isSyncing = React.useRef(false);
     const [deleteConfirmation, setDeleteConfirmation] = useState<{ title: string, message: string, onConfirm: () => void } | null>(null);
 
     // データ永続化: 読み込み
@@ -38,6 +40,10 @@ export default function StudyApp() {
             } else {
                 setTests(INITIAL_TESTS);
             }
+            const loadedUpdatedAt = localStorage.getItem('studyapp_updatedAt');
+            if (loadedUpdatedAt) {
+                setUpdatedAt(parseInt(loadedUpdatedAt));
+            }
         } catch (e) {
             console.error("Failed to load data", e);
             setTasks(INITIAL_TASKS);
@@ -46,13 +52,60 @@ export default function StudyApp() {
         setIsLoaded(true);
     }, []);
 
+    // Auto-sync on startup
+    useEffect(() => {
+        if (!isLoaded || readOnly) return;
+        syncWithCloud(true);
+    }, [isLoaded, readOnly]);
+
+    const syncWithCloud = async (silent = false) => {
+        try {
+            const res = await fetch('/api/sync');
+            const json = await res.json();
+            if (json.ok && json.data) {
+                const cloud = json.data;
+                const localUpdatedAt = parseInt(localStorage.getItem('studyapp_updatedAt') || '0');
+                if (cloud.updatedAt > localUpdatedAt) {
+                    // For silent (auto-sync), do not ask for confirmation. Just update.
+                    if (!silent && !confirm('クラウドに新しいデータがあります。同期しますか？')) return;
+
+                    isSyncing.current = true;
+                    setTasks(cloud.tasks);
+                    setTests(cloud.tests);
+                    setUpdatedAt(cloud.updatedAt);
+                    localStorage.setItem('studyapp_updatedAt', cloud.updatedAt.toString());
+                    if (!silent) alert('データを更新しました');
+                    // Reset flag after state update
+                    setTimeout(() => isSyncing.current = false, 100);
+                } else if (!silent) {
+                    alert('最新の状態です');
+                }
+            } else if (!silent) {
+                if (json.error) alert('更新エラー: ' + json.error);
+                else alert('データが見つかりません');
+            }
+        } catch (e) {
+            console.error(e);
+            if (!silent) alert('通信エラー');
+        }
+    };
+
+    // データ永続化: 保存
     // データ永続化: 保存
     useEffect(() => {
         if (isLoaded && !readOnly) {
             localStorage.setItem('studyapp_tasks', JSON.stringify(tasks));
             localStorage.setItem('studyapp_tests', JSON.stringify(tests));
+            localStorage.setItem('studyapp_updatedAt', updatedAt.toString());
         }
-    }, [tasks, tests, isLoaded, readOnly]);
+    }, [tasks, tests, updatedAt, isLoaded, readOnly]);
+
+    // Track local changes
+    useEffect(() => {
+        if (isLoaded && !readOnly && !isSyncing.current) {
+            setUpdatedAt(Date.now());
+        }
+    }, [tasks, tests]);
 
     const unitsWithTasks = Array.from(new Set(tasks.map(t => t.unit))).sort((a, b) => {
         const numA = parseInt(a.replace('第', '').replace('回', '')) || 0;
@@ -213,8 +266,11 @@ export default function StudyApp() {
                 onClose={() => setShareModalOpen(false)}
                 tasks={tasks}
                 tests={tests}
+                updatedAt={updatedAt}
                 onLoadData={onLoadData}
                 setReadOnly={setReadOnly}
+                onSync={syncWithCloud}
+                readOnly={readOnly}
             />
         </div>
     );

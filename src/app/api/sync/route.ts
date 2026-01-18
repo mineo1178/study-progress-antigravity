@@ -1,40 +1,48 @@
 import { NextResponse } from 'next/server';
+import { Redis } from '@upstash/redis';
 
-// In-memory store for development (resets on server restart)
-// For production, replace this with Vercel KV or a real database.
-const globalStore = new Map<string, any>();
+// Use environment variables for connection
+const redis = new Redis({
+    url: process.env.UPSTASH_REDIS_REST_URL!,
+    token: process.env.UPSTASH_REDIS_REST_TOKEN!,
+});
+
+const KEY = 'studyapp:v1';
 
 export async function POST(request: Request) {
     try {
         const body = await request.json();
-        const { data } = body;
+        const { tasks, tests, updatedAt } = body;
 
-        // Generate a simple 6-digit ID
-        const id = Math.floor(100000 + Math.random() * 900000).toString();
+        // Save to Redis
+        await redis.set(KEY, { tasks, tests, updatedAt });
 
-        // Store data (expires in 24 hours logic could be added here if using real DB)
-        globalStore.set(id, data);
-        console.log(`[Sync] Stored data for ID: ${id}`);
+        console.log(`[Sync] Saved data to Redis. UpdatedAt: ${updatedAt}`);
 
-        return NextResponse.json({ id, success: true });
+        return NextResponse.json({ ok: true });
     } catch (e) {
-        return NextResponse.json({ error: 'Failed to save data' }, { status: 500 });
+        console.error('[Sync] POST Error:', e);
+        return NextResponse.json({ ok: false, error: 'Failed to save data to cloud' }, { status: 500 });
     }
 }
 
 export async function GET(request: Request) {
-    const { searchParams } = new URL(request.url);
-    const id = searchParams.get('id');
+    try {
+        const data = await redis.get(KEY) as any;
 
-    if (!id) {
-        return NextResponse.json({ error: 'Missing ID' }, { status: 400 });
+        if (!data) {
+            // No data in cloud yet, returning null data is not an error, just empty
+            return NextResponse.json({ ok: true, data: null });
+        }
+
+        // Ensure data integrity
+        if (!Array.isArray(data.tasks)) data.tasks = [];
+        if (!Array.isArray(data.tests)) data.tests = [];
+        if (typeof data.updatedAt !== 'number') data.updatedAt = 0;
+
+        return NextResponse.json({ ok: true, data });
+    } catch (e) {
+        console.error('[Sync] GET Error:', e);
+        return NextResponse.json({ ok: false, error: 'Failed to fetch data from cloud' }, { status: 500 });
     }
-
-    const data = globalStore.get(id);
-
-    if (!data) {
-        return NextResponse.json({ error: 'ID not found or expired' }, { status: 404 });
-    }
-
-    return NextResponse.json({ data, success: true });
 }
